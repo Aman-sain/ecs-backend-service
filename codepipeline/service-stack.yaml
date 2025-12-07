@@ -41,8 +41,8 @@ Parameters:
     Description: VPC ID where resources will be created
 
   SubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-    Description: List of subnet IDs for the service
+    Type: CommaDelimitedList
+    Description: Comma-delimited list of subnet IDs for the service
 
   TaskExecutionRoleArn:
     Type: String
@@ -297,3 +297,9 @@ Outputs:
     Value: !Ref DomainName
     Export:
       Name: !Sub '${AWS::StackName}-DomainName'
+
+  TargetGroupArn:
+    Description: ARN of the target group
+    Value: !Ref TargetGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-TargetGroupArn'

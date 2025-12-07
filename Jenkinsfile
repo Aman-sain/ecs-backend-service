@@ -146,7 +146,7 @@ pipeline {
                     # Get infrastructure values (VPC, subnets, IAM roles)
                     echo "📊 Fetching infrastructure outputs..."
                     VPC_ID="vpc-02d7f89b03701136a"
-                    SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" --query 'Subnets[*].SubnetId' --output text | tr '\t' ',')
+                    SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" --query 'Subnets[*].SubnetId' --output text | tr '\\t' ',')
                     TASK_EXEC_ROLE=$(aws iam get-role --role-name auto-deploy-ecs-execution-role --query 'Role.Arn' --output text)
                     TASK_ROLE=$(aws iam get-role --role-name auto-deploy-ecs-task-role --query 'Role.Arn' --output text)
 
@@ -158,29 +158,60 @@ pipeline {
                     echo "  Memory: $MEMORY"
                     echo "  Desired Count: $DESIRED_COUNT"
                     echo "  Image: $IMAGE_URI"
+                    echo "  Subnet IDs: $SUBNET_IDS"
+
+                    # Save current task definition for rollback
+                    echo "📋 Saving current deployment state for rollback..."
+                    if aws ecs describe-services --cluster ${CLUSTER_NAME} --services ${SERVICE_NAME} --query 'services[0].taskDefinition' --output text 2>/dev/null | grep -q 'arn:aws'; then
+                        PREVIOUS_TASK_DEF=$(aws ecs describe-services --cluster ${CLUSTER_NAME} --services ${SERVICE_NAME} --query 'services[0].taskDefinition' --output text)
+                        echo "Previous task definition: $PREVIOUS_TASK_DEF"
+                        echo "$PREVIOUS_TASK_DEF" > /tmp/previous_task_def.txt
+                    else
+                        echo "No previous deployment found (first deployment)"
+                        echo "NONE" > /tmp/previous_task_def.txt
+                    fi
 
                     # Deploy CloudFormation stack
-                    aws cloudformation deploy \
-                        --template-file codepipeline/service-stack.yaml \
-                        --stack-name ecs-service-${SERVICE_NAME} \
-                        --parameter-overrides \
-                            ServiceName=${SERVICE_NAME} \
-                            ClusterName=${CLUSTER_NAME} \
-                            ImageUri=${IMAGE_URI} \
-                            ContainerPort=${CONTAINER_PORT} \
-                            DesiredCount=${DESIRED_COUNT} \
-                            Cpu=${CPU} \
-                            Memory=${MEMORY} \
-                            VpcId=${VPC_ID} \
-                            SubnetIds=${SUBNET_IDS} \
-                            TaskExecutionRoleArn=${TASK_EXEC_ROLE} \
-                            TaskRoleArn=${TASK_ROLE} \
-                            LogGroupName=/ecs/auto-deploy-prod \
-                        --capabilities CAPABILITY_IAM \
-                        --region ${AWS_REGION} \
+                    echo "🚀 Starting CloudFormation deployment..."
+                    aws cloudformation deploy \\
+                        --template-file codepipeline/service-stack.yaml \\
+                        --stack-name ecs-service-${SERVICE_NAME} \\
+                        --parameter-overrides \\
+                            ServiceName=${SERVICE_NAME} \\
+                            ClusterName=${CLUSTER_NAME} \\
+                            ImageUri=${IMAGE_URI} \\
+                            ContainerPort=${CONTAINER_PORT} \\
+                            DesiredCount=${DESIRED_COUNT} \\
+                            Cpu=${CPU} \\
+                            Memory=${MEMORY} \\
+                            VpcId=${VPC_ID} \\
+                            SubnetIds=${SUBNET_IDS} \\
+                            TaskExecutionRoleArn=${TASK_EXEC_ROLE} \\
+                            TaskRoleArn=${TASK_ROLE} \\
+                            LogGroupName=/ecs/auto-deploy-prod \\
+                        --capabilities CAPABILITY_IAM \\
+                        --region ${AWS_REGION} \\
                         --no-fail-on-empty-changeset
 
-                    echo "✅ CloudFormation deployment complete!"
+                    if [ $? -eq 0 ]; then
+                        echo "✅ CloudFormation deployment initiated successfully!"
+                        echo "⏳ Waiting for ECS service to stabilize (blue-green deployment)..."
+
+                        # Wait for service to become stable (ensures new tasks are running)
+                        aws ecs wait services-stable \\
+                            --cluster ${CLUSTER_NAME} \\
+                            --services ${SERVICE_NAME} \\
+                            --region ${AWS_REGION}
+
+                        if [ $? -eq 0 ]; then
+                            echo "✅ ECS service stabilized - new tasks are running!"
+                        else
+                            echo "⚠️  Service stabilization timed out, but continuing to health check..."
+                        fi
+                    else
+                        echo "❌ CloudFormation deployment failed!"
+                        exit 1
+                    fi
                 '''
             }
         }
@@ -189,25 +220,104 @@ pipeline {
             steps {
                 script {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo "🏥 Running Health Checks"
+                    echo "🏥 Running Health Checks via ALB"
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
-                    echo "Waiting for deployment to stabilize..."
+                    echo "⏳ Waiting 30s for new tasks to register with ALB..."
                     sleep 30
 
-                    # Health check loop
-                    for i in {1..10}; do
-                        if curl -sf https://api.webbyftw.co.in/api/health; then
-                            echo ""
-                            echo "✅ Backend is healthy!"
-                            exit 0
+                    # Check ALB target health
+                    echo "🔍 Checking ALB target group health..."
+                    TARGET_GROUP_ARN=$(aws cloudformation describe-stacks \\
+                        --stack-name ecs-service-${SERVICE_NAME} \\
+                        --query 'Stacks[0].Outputs[?OutputKey==`TargetGroupArn`].OutputValue' \\
+                        --output text 2>/dev/null || echo "")
+
+                    if [ -z "$TARGET_GROUP_ARN" ]; then
+                        echo "⚠️  Could not find target group ARN from stack, checking via tags..."
+                        TARGET_GROUP_ARN=$(aws elbv2 describe-target-groups \\
+                            --names backend-tg \\
+                            --query 'TargetGroups[0].TargetGroupArn' \\
+                            --output text 2>/dev/null || echo "")
+                    fi
+
+                    # Health check loop with ALB verification
+                    HEALTH_CHECK_PASSED=false
+                    for i in {1..20}; do
+                        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        echo "Health Check Attempt $i/20"
+
+                        # Check endpoint health
+                        if curl -sf https://api.webbyftw.co.in/api/health > /dev/null 2>&1; then
+                            echo "✅ Endpoint health check passed!"
+
+                            # Verify ALB target health if we have target group ARN
+                            if [ -n "$TARGET_GROUP_ARN" ] && [ "$TARGET_GROUP_ARN" != "None" ]; then
+                                HEALTHY_COUNT=$(aws elbv2 describe-target-health \\
+                                    --target-group-arn "$TARGET_GROUP_ARN" \\
+                                    --query 'TargetHealthDescriptions[?TargetHealth.State==`healthy`] | length(@)' \\
+                                    --output text 2>/dev/null || echo "0")
+
+                                echo "📊 Healthy targets in ALB: $HEALTHY_COUNT"
+
+                                if [ "$HEALTHY_COUNT" -gt 0 ]; then
+                                    echo "✅ ALB has healthy targets!"
+                                    HEALTH_CHECK_PASSED=true
+                                    break
+                                else
+                                    echo "⏳ Waiting for targets to become healthy in ALB..."
+                                fi
+                            else
+                                echo "✅ Health check passed (ALB verification skipped)"
+                                HEALTH_CHECK_PASSED=true
+                                break
+                            fi
+                        else
+                            echo "⏳ Endpoint not healthy yet, waiting... ($i/20)"
                         fi
-                        echo "⏳ Waiting for backend... ($i/10)"
-                        sleep 10
+
+                        sleep 15
                     done
 
-                    echo "⚠️  Health check timeout (service may still be starting)"
+                    if [ "$HEALTH_CHECK_PASSED" = false ]; then
+                        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        echo "❌ HEALTH CHECK FAILED - Initiating rollback!"
+                        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+                        # Read previous task definition
+                        PREVIOUS_TASK_DEF=$(cat /tmp/previous_task_def.txt 2>/dev/null || echo "NONE")
+
+                        if [ "$PREVIOUS_TASK_DEF" != "NONE" ] && [ -n "$PREVIOUS_TASK_DEF" ]; then
+                            echo "🔄 Rolling back to previous task definition: $PREVIOUS_TASK_DEF"
+
+                            aws ecs update-service \\
+                                --cluster ${CLUSTER_NAME} \\
+                                --service ${SERVICE_NAME} \\
+                                --task-definition "$PREVIOUS_TASK_DEF" \\
+                                --force-new-deployment \\
+                                --region ${AWS_REGION}
+
+                            echo "⏳ Waiting for rollback to complete..."
+                            sleep 30
+
+                            echo "❌ Deployment failed health checks and was rolled back!"
+                        else
+                            echo "⚠️  No previous deployment to rollback to. This was the first deployment."
+                            echo "❌ Health checks failed on initial deployment!"
+                        fi
+
+                        # Show recent logs to help debug
+                        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        echo "📋 Recent Container Logs (last 50 lines):"
+                        aws logs tail /ecs/auto-deploy-prod --follow --since 5m --filter-pattern "" --format short | head -50 || true
+
+                        exit 1
+                    fi
+
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "✅ All health checks passed!"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 '''
             }
         }
@@ -307,12 +417,20 @@ pipeline {
                 } catch (Exception e) {
                     echo "Docker cleanup: ${e.message}"
                 }
+                // Cleanup temporary files
+                try {
+                    sh 'rm -f /tmp/previous_task_def.txt || true'
+                } catch (Exception e) {
+                    echo "Temp file cleanup: ${e.message}"
+                }
                 // Workspace cleanup with permission handling
                 try {
                     sh '''
-                        # Remove pytest cache and other files with sudo if needed
-                        chmod -R 777 ${WORKSPACE} || true
-                        rm -rf ${WORKSPACE}/* ${WORKSPACE}/.* || true
+                        # Remove pytest cache and other files
+                        find ${WORKSPACE} -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
+                        find ${WORKSPACE} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+                        find ${WORKSPACE} -type f -name "*.pyc" -delete 2>/dev/null || true
+                        docker system prune -f || true
                     '''
                 } catch (Exception e) {
                     echo "Workspace cleanup: ${e.message}"
