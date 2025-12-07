@@ -399,13 +399,88 @@ EOF
 
                         exit 1
                     fi
-
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo "✅ All health checks passed!"
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 '''
             }
         }
+
+        stage('🌐 Update DNS') {
+            steps {
+                script {
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "🌐 Updating DNS Record (Direct Access)"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                }
+                sh '''
+                    # 1. Find the running task ARN
+                    TASK_ARN=$(aws ecs list-tasks \\
+                        --cluster ${CLUSTER_NAME} \\
+                        --service-name ${SERVICE_NAME} \\
+                        --desired-status RUNNING \\
+                        --query 'taskArns[0]' \\
+                        --output text)
+
+                    if [ "$TASK_ARN" == "None" ] || [ -z "$TASK_ARN" ]; then
+                        echo "❌ No running task found for DNS update!"
+                        exit 1
+                    fi
+
+                    echo "📋 Found Task ARN: $TASK_ARN"
+
+                    # 2. Get the ENI ID from the task
+                    ENI_ID=$(aws ecs describe-tasks \\
+                        --cluster ${CLUSTER_NAME} \\
+                        --tasks $TASK_ARN \\
+                        --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \\
+                        --output text)
+
+                    echo "📋 Found ENI ID: $ENI_ID"
+
+                    # 3. Get Public IP from ENI
+                    PUBLIC_IP=$(aws ec2 describe-network-interfaces \\
+                        --network-interface-ids $ENI_ID \\
+                        --query 'NetworkInterfaces[0].Association.PublicIp' \\
+                        --output text)
+
+                    if [ -z "$PUBLIC_IP" ]; then
+                        echo "❌ Could not find Public IP for task!"
+                        exit 1
+                    fi
+
+                    echo "✅ Found Public IP: $PUBLIC_IP"
+                    echo "🔄 Updating Route53 record api.webbyftw.co.in..."
+
+                    # 4. Create JSON for Route53 update
+                    cat <<EOF > dns-change.json
+{
+  "Comment": "Update record to reflect new ECS Task IP",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "api.webbyftw.co.in",
+        "Type": "A",
+        "TTL": 60,
+        "ResourceRecords": [
+          {
+            "Value": "$PUBLIC_IP"
+          }
+        ]
+      }
+    }
+  ]
+}
+EOF
+                    
+                    # 5. Execute Route53 Update
+                    aws route53 change-resource-record-sets \\
+                        --hosted-zone-id Z0937327HD133Q6A55PH \\
+                        --change-batch file://dns-change.json
+
+                    echo "✅ DNS Updated successfully. API should be accessible at http://api.webbyftw.co.in in ~60s."
+                '''
+            }
+        }
+
 
         stage('📊 Verify Deployment') {
             steps {

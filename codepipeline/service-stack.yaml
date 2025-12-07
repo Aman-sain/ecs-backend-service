@@ -68,95 +68,7 @@ Parameters:
     Description: Domain name for the service
 
 Resources:
-  # ALB Security Group
-  ALBSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: !Sub 'Security group for ${ServiceName} ALB'
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: Allow HTTP
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 0.0.0.0/0
-          Description: Allow HTTPS
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Name
-          Value: !Sub '${ServiceName}-alb-sg'
-
-  # Application Load Balancer
-  LoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      Type: application
-      Scheme: internet-facing
-      IpAddressType: ipv4
-      Subnets: !Ref SubnetIds
-      SecurityGroups:
-        - !Ref ALBSecurityGroup
-      Tags:
-        - Key: Name
-          Value: !Sub '${ServiceName}-alb'
-
-  # Target Group
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      Port: !Ref ContainerPort
-      Protocol: HTTP
-      VpcId: !Ref VpcId
-      TargetType: ip
-      HealthCheckEnabled: true
-      HealthCheckPath: /api/health
-      HealthCheckProtocol: HTTP
-      HealthCheckIntervalSeconds: 15
-      HealthCheckTimeoutSeconds: 10
-      HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 2
-      Matcher:
-        HttpCode: 200-299
-
-      TargetGroupAttributes:
-        - Key: deregistration_delay.timeout_seconds
-          Value: '30'
-        - Key: stickiness.enabled
-          Value: 'false'
-      Tags:
-        - Key: Name
-          Value: !Sub '${ServiceName}-tg'
-
-  # ALB Listener
-  ALBListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      LoadBalancerArn: !Ref LoadBalancer
-      Port: 80
-      Protocol: HTTP
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref TargetGroup
-
-  # Route53 DNS Record
-  DNSRecord:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneId: !Ref HostedZoneId
-      Name: !Ref DomainName
-      Type: A
-      AliasTarget:
-        HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
-        DNSName: !GetAtt LoadBalancer.DNSName
-        EvaluateTargetHealth: true
-
-  # Security Group for ECS Service
+  # Security Group for ECS Service - OPEN TO WORLD for Direct Access
   ServiceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -166,8 +78,8 @@ Resources:
         - IpProtocol: tcp
           FromPort: !Ref ContainerPort
           ToPort: !Ref ContainerPort
-          SourceSecurityGroupId: !Ref ALBSecurityGroup
-          Description: Allow traffic from ALB
+          CidrIp: 0.0.0.0/0
+          Description: Allow direct traffic from internet
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -212,10 +124,9 @@ Resources:
         - Key: Name
           Value: !Sub '${ServiceName}-task'
 
-  # ECS Service with Blue/Green Deployment
+  # ECS Service - NO LoadBalancer
   Service:
     Type: AWS::ECS::Service
-    DependsOn: ALBListener
     Properties:
       ServiceName: !Ref ServiceName
       Cluster: !Ref ClusterName
@@ -228,10 +139,6 @@ Resources:
           SecurityGroups:
             - !Ref ServiceSecurityGroup
           Subnets: !Ref SubnetIds
-      LoadBalancers:
-        - ContainerName: !Ref ServiceName
-          ContainerPort: !Ref ContainerPort
-          TargetGroupArn: !Ref TargetGroup
       HealthCheckGracePeriodSeconds: 60
       DeploymentConfiguration:
         MaximumPercent: 200
@@ -260,18 +167,3 @@ Outputs:
     Description: ARN of the task definition
     Value: !Ref TaskDefinition
 
-  LoadBalancerDNS:
-    Description: DNS name of the load balancer
-    Value: !GetAtt LoadBalancer.DNSName
-
-  LoadBalancerArn:
-    Description: ARN of the load balancer
-    Value: !Ref LoadBalancer
-
-  TargetGroupArn:
-    Description: ARN of the target group
-    Value: !Ref TargetGroup
-
-  DomainName:
-    Description: Custom domain name
-    Value: !Ref DomainName
