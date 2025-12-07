@@ -191,21 +191,23 @@ pipeline {
                         set +e
                         if [ "$STACK_EXISTS" = "DOES_NOT_EXIST" ]; then
                             echo "📝 Creating new stack..."
+                            
+                            # Create parameters array to avoid shell splitting issues
                             aws cloudformation create-stack \
                                 --stack-name ecs-service-${SERVICE_NAME} \
                                 --template-body file://codepipeline/service-stack.yaml \
                                 --parameters \
-                                    ParameterKey=ServiceName,ParameterValue=${SERVICE_NAME} \
-                                    ParameterKey=ClusterName,ParameterValue=${CLUSTER_NAME} \
-                                    ParameterKey=ImageUri,ParameterValue=${IMAGE_URI} \
-                                    ParameterKey=ContainerPort,ParameterValue=${CONTAINER_PORT} \
-                                    ParameterKey=DesiredCount,ParameterValue=${DESIRED_COUNT} \
-                                    ParameterKey=Cpu,ParameterValue=${CPU} \
-                                    ParameterKey=Memory,ParameterValue=${MEMORY} \
-                                    ParameterKey=VpcId,ParameterValue=${VPC_ID} \
-                                    ParameterKey=SubnetIds,ParameterValue=\"${SUBNET_IDS}\" \
-                                    ParameterKey=TaskExecutionRoleArn,ParameterValue=${TASK_EXEC_ROLE} \
-                                    ParameterKey=TaskRoleArn,ParameterValue=${TASK_ROLE} \
+                                    'ParameterKey=ServiceName,ParameterValue='${SERVICE_NAME} \
+                                    'ParameterKey=ClusterName,ParameterValue='${CLUSTER_NAME} \
+                                    'ParameterKey=ImageUri,ParameterValue='${IMAGE_URI} \
+                                    'ParameterKey=ContainerPort,ParameterValue='${CONTAINER_PORT} \
+                                    'ParameterKey=DesiredCount,ParameterValue='${DESIRED_COUNT} \
+                                    'ParameterKey=Cpu,ParameterValue='${CPU} \
+                                    'ParameterKey=Memory,ParameterValue='${MEMORY} \
+                                    'ParameterKey=VpcId,ParameterValue='${VPC_ID} \
+                                    'ParameterKey=SubnetIds,ParameterValue='${SUBNET_IDS} \
+                                    'ParameterKey=TaskExecutionRoleArn,ParameterValue='${TASK_EXEC_ROLE} \
+                                    'ParameterKey=TaskRoleArn,ParameterValue='${TASK_ROLE} \
                                 --capabilities CAPABILITY_IAM \
                                 --region ${AWS_REGION} > /tmp/cfn_deploy.log 2>&1
                             
@@ -224,21 +226,23 @@ pipeline {
                             fi
                         else
                             echo "🔄 Updating existing stack..."
+                            
+                            # Create parameters array to avoid shell splitting issues
                             aws cloudformation update-stack \
                                 --stack-name ecs-service-${SERVICE_NAME} \
                                 --template-body file://codepipeline/service-stack.yaml \
                                 --parameters \
-                                    ParameterKey=ServiceName,ParameterValue=${SERVICE_NAME} \
-                                    ParameterKey=ClusterName,ParameterValue=${CLUSTER_NAME} \
-                                    ParameterKey=ImageUri,ParameterValue=${IMAGE_URI} \
-                                    ParameterKey=ContainerPort,ParameterValue=${CONTAINER_PORT} \
-                                    ParameterKey=DesiredCount,ParameterValue=${DESIRED_COUNT} \
-                                    ParameterKey=Cpu,ParameterValue=${CPU} \
-                                    ParameterKey=Memory,ParameterValue=${MEMORY} \
-                                    ParameterKey=VpcId,ParameterValue=${VPC_ID} \
-                                    ParameterKey=SubnetIds,ParameterValue=\"${SUBNET_IDS}\" \
-                                    ParameterKey=TaskExecutionRoleArn,ParameterValue=${TASK_EXEC_ROLE} \
-                                    ParameterKey=TaskRoleArn,ParameterValue=${TASK_ROLE} \
+                                    'ParameterKey=ServiceName,ParameterValue='${SERVICE_NAME} \
+                                    'ParameterKey=ClusterName,ParameterValue='${CLUSTER_NAME} \
+                                    'ParameterKey=ImageUri,ParameterValue='${IMAGE_URI} \
+                                    'ParameterKey=ContainerPort,ParameterValue='${CONTAINER_PORT} \
+                                    'ParameterKey=DesiredCount,ParameterValue='${DESIRED_COUNT} \
+                                    'ParameterKey=Cpu,ParameterValue='${CPU} \
+                                    'ParameterKey=Memory,ParameterValue='${MEMORY} \
+                                    'ParameterKey=VpcId,ParameterValue='${VPC_ID} \
+                                    'ParameterKey=SubnetIds,ParameterValue='${SUBNET_IDS} \
+                                    'ParameterKey=TaskExecutionRoleArn,ParameterValue='${TASK_EXEC_ROLE} \
+                                    'ParameterKey=TaskRoleArn,ParameterValue='${TASK_ROLE} \
                                 --capabilities CAPABILITY_IAM \
                                 --region ${AWS_REGION} > /tmp/cfn_deploy.log 2>&1
                             
