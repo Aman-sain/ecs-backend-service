@@ -182,12 +182,35 @@ class ECSDeployer:
         service_name = self.config['service_name']
         ecs_config = self.config['ecs']
 
-        # Get VPC ID
+        # Get VPC ID - try multiple methods
         ec2 = boto3.client('ec2')
+
+        # Method 1: Try by tag
         vpcs = ec2.describe_vpcs(Filters=[
             {'Name': 'tag:Name', 'Values': ['auto-deploy-prod-vpc']}
         ])
+
+        if not vpcs['Vpcs']:
+            # Method 2: Try by CIDR (our created VPC)
+            vpcs = ec2.describe_vpcs(Filters=[
+                {'Name': 'cidr-block', 'Values': ['10.100.0.0/16']}
+            ])
+
+        if not vpcs['Vpcs']:
+            # Method 3: Use default VPC
+            vpcs = ec2.describe_vpcs(Filters=[
+                {'Name': 'isDefault', 'Values': ['true']}
+            ])
+
+        if not vpcs['Vpcs']:
+            # Method 4: Get any VPC
+            vpcs = ec2.describe_vpcs()
+
+        if not vpcs['Vpcs']:
+            raise Exception("No VPC found in us-east-1! Please run infrastructure pipeline first.")
+
         vpc_id = vpcs['Vpcs'][0]['VpcId']
+        print(f"[{datetime.now()}] Using VPC: {vpc_id}")
 
         tg_name = f"auto-{service_name}-{int(time.time())}"[:32]
 
