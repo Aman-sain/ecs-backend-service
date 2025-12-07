@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ECS Service Deployment for Backend - Reads config from deploy.yaml'
+
+Parameters:
+  ServiceName:
+    Type: String
+    Default: backend
+    Description: Name of the service
+
+  ClusterName:
+    Type: String
+    Default: auto-deploy-prod-cluster
+    Description: ECS Cluster name (from Pulumi)
+
+  ImageUri:
+    Type: String
+    Description: Docker image URI with tag
+
+  ContainerPort:
+    Type: Number
+    Default: 8000
+    Description: Port the container listens on
+
+  DesiredCount:
+    Type: Number
+    Default: 2
+    Description: Number of tasks to run
+
+  Cpu:
+    Type: String
+    Default: '512'
+    Description: CPU units for the task
+
+  Memory:
+    Type: String
+    Default: '1024'
+    Description: Memory (MB) for the task
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where resources will be created
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet IDs for the service
+
+  TaskExecutionRoleArn:
+    Type: String
+    Description: ARN of ECS task execution role (from Pulumi)
+
+  TaskRoleArn:
+    Type: String
+    Description: ARN of ECS task role (from Pulumi)
+
+  LogGroupName:
+    Type: String
+    Default: /ecs/auto-deploy-prod
+    Description: CloudWatch log group name (from Pulumi)
+
+Resources:
+  # Security Group for ECS Service
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Security group for ${ServiceName} service'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          CidrIp: 0.0.0.0/0
+          Description: Allow traffic to container port
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${ServiceName}-service-sg'
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ECS Task Definition
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub 'auto-deploy-${ServiceName}'
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !Ref TaskExecutionRoleArn
+      TaskRoleArn: !Ref TaskRoleArn
+      ContainerDefinitions:
+        - Name: !Ref ServiceName
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: ENVIRONMENT
+              Value: production
+            - Name: DATABASE_URL
+              Value: sqlite:///./employees.db
+            - Name: PROJECT_NAME
+              Value: Enterprise Employee Management System
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroupName
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: !Ref ServiceName
+      Tags:
+        - Key: Name
+          Value: !Sub '${ServiceName}-task'
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ECS Service
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Ref ServiceName
+      Cluster: !Ref ClusterName
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ServiceSecurityGroup
+          Subnets: !Ref SubnetIds
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ServiceName}-service'
+        - Key: ManagedBy
+          Value: CloudFormation
+
+Outputs:
+  ServiceName:
+    Description: Name of the ECS service
+    Value: !GetAtt Service.Name
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceName'
+
+  ServiceArn:
+    Description: ARN of the ECS service
+    Value: !Ref Service
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceArn'
+
+  TaskDefinitionArn:
+    Description: ARN of the task definition
+    Value: !Ref TaskDefinition
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskDefinitionArn'
+
+  SecurityGroupId:
+    Description: Security group ID for the service
+    Value: !Ref ServiceSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupId'

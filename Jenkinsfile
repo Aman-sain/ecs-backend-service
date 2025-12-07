@@ -112,25 +112,64 @@ pipeline {
             }
         }
 
-        stage('🚀 Deploy to ECS (Blue-Green)') {
+        stage('🚀 Deploy to ECS via CloudFormation') {
             steps {
                 script {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo "🚀 Deploying Backend with Blue-Green Strategy"
+                    echo "🚀 Deploying Backend with CloudFormation"
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
-                    # Install dependencies
-                    pip3 install -q boto3 pyyaml
+                    # Parse deploy.yaml configuration
+                    pip3 install -q pyyaml
 
-                    # Download deploy script if not present
-                    if [ ! -f "deploy.py" ]; then
-                        echo "Downloading deploy.py..."
-                        curl -sO https://raw.githubusercontent.com/YOUR_REPO/deploy.py
-                    fi
+                    # Read deploy.yaml values
+                    CPU=$(python3 -c "import yaml; print(yaml.safe_load(open('codepipeline/deploy.yaml'))['ecs']['cpu'])")
+                    MEMORY=$(python3 -c "import yaml; print(yaml.safe_load(open('codepipeline/deploy.yaml'))['ecs']['memory'])")
+                    DESIRED_COUNT=$(python3 -c "import yaml; print(yaml.safe_load(open('codepipeline/deploy.yaml'))['ecs']['desired_count'])")
+                    CONTAINER_PORT=$(python3 -c "import yaml; print(yaml.safe_load(open('codepipeline/deploy.yaml'))['ecs']['container_port'])")
 
-                    # Run deployment
-                    python3 deploy.py
+                    # Get Pulumi outputs (VPC, subnets, IAM roles)
+                    echo "📊 Fetching infrastructure outputs from Pulumi..."
+                    aws s3 cp s3://terraform-state-ecs-autodeploy-724772079986/pulumi/.pulumi/stacks/prod.json /tmp/pulumi-outputs.json || true
+
+                    # Extract values from Pulumi state (fallback to hardcoded if needed)
+                    VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --query 'Vpcs[0].VpcId' --output text)
+                    SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" --query 'Subnets[*].SubnetId' --output text | tr '\t' ',')
+                    TASK_EXEC_ROLE=$(aws iam get-role --role-name auto-deploy-ecs-execution-role --query 'Role.Arn' --output text)
+                    TASK_ROLE=$(aws iam get-role --role-name auto-deploy-ecs-task-role --query 'Role.Arn' --output text)
+
+                    # Build image tag
+                    IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/auto-deploy-${SERVICE_NAME}:${BUILD_NUMBER}"
+
+                    echo "Deploying CloudFormation stack..."
+                    echo "  CPU: $CPU"
+                    echo "  Memory: $MEMORY"
+                    echo "  Desired Count: $DESIRED_COUNT"
+                    echo "  Image: $IMAGE_URI"
+
+                    # Deploy CloudFormation stack
+                    aws cloudformation deploy \
+                        --template-file codepipeline/service-stack.yaml \
+                        --stack-name ecs-service-${SERVICE_NAME} \
+                        --parameter-overrides \
+                            ServiceName=${SERVICE_NAME} \
+                            ClusterName=${CLUSTER_NAME} \
+                            ImageUri=${IMAGE_URI} \
+                            ContainerPort=${CONTAINER_PORT} \
+                            DesiredCount=${DESIRED_COUNT} \
+                            Cpu=${CPU} \
+                            Memory=${MEMORY} \
+                            VpcId=${VPC_ID} \
+                            SubnetIds=${SUBNET_IDS} \
+                            TaskExecutionRoleArn=${TASK_EXEC_ROLE} \
+                            TaskRoleArn=${TASK_ROLE} \
+                            LogGroupName=/ecs/auto-deploy-prod \
+                        --capabilities CAPABILITY_IAM \
+                        --region ${AWS_REGION} \
+                        --no-fail-on-empty-changeset
+
+                    echo "✅ CloudFormation deployment complete!"
                 '''
             }
         }
