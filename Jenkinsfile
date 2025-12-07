@@ -39,17 +39,17 @@ pipeline {
                     echo "🧹 Checking out code"
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/main']],
-                    extensions: [
-                        [$class: 'CloneOption', depth: 1, shallow: true]
-                    ],
-                    userRemoteConfigs: [[
-                        credentialsId: 'github-creds',
-                        url: 'https://github.com/Aman-sain/ecs-backend-service'
-                    ]]
-                ])
+                sh '''
+                    # Manual git clone to avoid Jenkins workspace cleanup issues
+                    git clone --depth 1 --branch main https://github.com/Aman-sain/ecs-backend-service.git ${WORKSPACE}/repo
+
+                    # Move contents to workspace root
+                    mv ${WORKSPACE}/repo/* ${WORKSPACE}/ || true
+                    mv ${WORKSPACE}/repo/.* ${WORKSPACE}/ 2>/dev/null || true
+                    rm -rf ${WORKSPACE}/repo
+
+                    echo "✓ Code checked out successfully"
+                '''
             }
         }
 
