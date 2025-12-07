@@ -1,0 +1,18 @@
+service_name: backend
+subdomain: api
+
+ecs:
+  cpu: 512
+  memory: 1024
+  desired_count: 2
+  container_port: 8000
+  health_check_path: /api/health
+
+environment:
+  ENVIRONMENT: production
+  DATABASE_URL: sqlite:///./employees.db
+  PROJECT_NAME: Enterprise Employee Management System
+
+ssm_parameters:
+  - /prod/backend/database-url
+  - /prod/backend/secret-key
