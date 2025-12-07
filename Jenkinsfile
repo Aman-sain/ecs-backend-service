@@ -12,9 +12,33 @@ pipeline {
         timestamps()
         timeout(time: 20, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '10'))
+        skipDefaultCheckout(true)  // We'll do clean checkout manually
     }
 
     stages {
+        stage('🧹 Checkout Code') {
+            steps {
+                script {
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "🧹 Checking out code with clean workspace"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                }
+                // Clean checkout
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    extensions: [
+                        [$class: 'CleanBeforeCheckout'],
+                        [$class: 'CloneOption', depth: 1, shallow: true]
+                    ],
+                    userRemoteConfigs: [[
+                        credentialsId: 'github-creds',
+                        url: 'https://github.com/Aman-sain/ecs-backend-service'
+                    ]]
+                ])
+            }
+        }
+
         stage('🔍 Validate Configuration') {
             steps {
                 script {
