@@ -119,13 +119,18 @@ Resources:
       HealthCheckEnabled: true
       HealthCheckPath: /api/health
       HealthCheckProtocol: HTTP
-      HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds: 5
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 10
       HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 3
+      UnhealthyThresholdCount: 2
       Matcher:
         HttpCode: 200-299
       DeregistrationDelay: 30
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+        - Key: stickiness.enabled
+          Value: 'false'
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-tg'
@@ -233,13 +238,17 @@ Resources:
         - ContainerName: !Ref ServiceName
           ContainerPort: !Ref ContainerPort
           TargetGroupArn: !Ref TargetGroup
-      HealthCheckGracePeriodSeconds: 60
+      HealthCheckGracePeriodSeconds: 120
       DeploymentConfiguration:
         MaximumPercent: 200
         MinimumHealthyPercent: 100
         DeploymentCircuitBreaker:
           Enable: true
           Rollback: true
+      DeploymentController:
+        Type: ECS
+      EnableECSManagedTags: true
+      PropagateTags: TASK_DEFINITION
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-service'
