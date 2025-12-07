@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'ECS Service Deployment for Backend with ALB and DNS'
+Description: 'ECS Service Deployment for Backend - Reads config from deploy.yaml'
 
 Parameters:
   ServiceName:
@@ -10,7 +10,7 @@ Parameters:
   ClusterName:
     Type: String
     Default: auto-deploy-prod-cluster
-    Description: ECS Cluster name
+    Description: ECS Cluster name (from Pulumi)
 
   ImageUri:
     Type: String
@@ -46,16 +46,16 @@ Parameters:
 
   TaskExecutionRoleArn:
     Type: String
-    Description: ARN of ECS task execution role
+    Description: ARN of ECS task execution role (from Pulumi)
 
   TaskRoleArn:
     Type: String
-    Description: ARN of ECS task role
+    Description: ARN of ECS task role (from Pulumi)
 
   LogGroupName:
     Type: String
     Default: /ecs/auto-deploy-prod
-    Description: CloudWatch log group name
+    Description: CloudWatch log group name (from Pulumi)
 
   HostedZoneId:
     Type: String
@@ -67,14 +67,10 @@ Parameters:
     Default: api.webbyftw.co.in
     Description: Domain name for the service
 
-Conditions:
-  CreateALBResources: !Equals [!Ref ServiceName, backend]
-
 Resources:
   # ALB Security Group
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-    Condition: CreateALBResources
     Properties:
       GroupDescription: !Sub 'Security group for ${ServiceName} ALB'
       VpcId: !Ref VpcId
@@ -99,7 +95,8 @@ Resources:
   # Application Load Balancer
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Condition: CreateALBResources
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Type: application
       Scheme: internet-facing
@@ -110,11 +107,14 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-alb'
+        - Key: Service
+          Value: !Ref ServiceName
 
   # Target Group
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Condition: CreateALBResources
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Port: !Ref ContainerPort
       Protocol: HTTP
@@ -138,11 +138,12 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-tg'
+        - Key: Service
+          Value: !Ref ServiceName
 
   # ALB Listener
   ALBListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
-    Condition: CreateALBResources
     Properties:
       LoadBalancerArn: !Ref LoadBalancer
       Port: 80
@@ -154,7 +155,8 @@ Resources:
   # Route53 DNS Record
   DNSRecord:
     Type: AWS::Route53::RecordSet
-    Condition: CreateALBResources
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       HostedZoneId: !Ref HostedZoneId
       Name: !Ref DomainName
@@ -174,9 +176,8 @@ Resources:
         - IpProtocol: tcp
           FromPort: !Ref ContainerPort
           ToPort: !Ref ContainerPort
-          SourceSecurityGroupId: !If [CreateALBResources, !Ref ALBSecurityGroup, !Ref 'AWS::NoValue']
-          CidrIp: !If [CreateALBResources, !Ref 'AWS::NoValue', '0.0.0.0/0']
-          Description: Allow traffic from ALB or internet
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: Allow traffic from ALB
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -184,6 +185,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-service-sg'
+        - Key: ManagedBy
+          Value: CloudFormation
 
   # ECS Task Definition
   TaskDefinition:
@@ -220,11 +223,13 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-task'
+        - Key: ManagedBy
+          Value: CloudFormation
 
   # ECS Service
   Service:
     Type: AWS::ECS::Service
-    DependsOn: !If [CreateALBResources, ALBListener, !Ref 'AWS::NoValue']
+    DependsOn: ALBListener
     Properties:
       ServiceName: !Ref ServiceName
       Cluster: !Ref ClusterName
@@ -237,13 +242,11 @@ Resources:
           SecurityGroups:
             - !Ref ServiceSecurityGroup
           Subnets: !Ref SubnetIds
-      LoadBalancers: !If
-        - CreateALBResources
-        - - ContainerName: !Ref ServiceName
-            ContainerPort: !Ref ContainerPort
-            TargetGroupArn: !Ref TargetGroup
-        - !Ref 'AWS::NoValue'
-      HealthCheckGracePeriodSeconds: !If [CreateALBResources, 60, !Ref 'AWS::NoValue']
+      LoadBalancers:
+        - ContainerName: !Ref ServiceName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+      HealthCheckGracePeriodSeconds: 60
       DeploymentConfiguration:
         MaximumPercent: 200
         MinimumHealthyPercent: 100
@@ -257,40 +260,54 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-service'
+        - Key: ManagedBy
+          Value: CloudFormation
 
 Outputs:
   ServiceName:
     Description: Name of the ECS service
     Value: !GetAtt Service.Name
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceName'
 
   ServiceArn:
     Description: ARN of the ECS service
     Value: !Ref Service
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceArn'
 
   TaskDefinitionArn:
     Description: ARN of the task definition
     Value: !Ref TaskDefinition
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskDefinitionArn'
 
   SecurityGroupId:
     Description: Security group ID for the service
     Value: !Ref ServiceSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupId'
 
   LoadBalancerDNS:
-    Condition: CreateALBResources
     Description: DNS name of the load balancer
     Value: !GetAtt LoadBalancer.DNSName
+    Export:
+      Name: !Sub '${AWS::StackName}-LoadBalancerDNS'
 
   LoadBalancerArn:
-    Condition: CreateALBResources
     Description: ARN of the load balancer
     Value: !Ref LoadBalancer
-
-  TargetGroupArn:
-    Condition: CreateALBResources
-    Description: ARN of the target group
-    Value: !Ref TargetGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LoadBalancerArn'
 
   DomainName:
-    Condition: CreateALBResources
     Description: Custom domain name
     Value: !Ref DomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-DomainName'
+
+  TargetGroupArn:
+    Description: ARN of the target group
+    Value: !Ref TargetGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-TargetGroupArn'

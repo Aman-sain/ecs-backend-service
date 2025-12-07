@@ -171,46 +171,70 @@ pipeline {
                         echo "NONE" > /tmp/previous_task_def.txt
                     fi
 
-                    # Deploy CloudFormation stack
+                    # Deploy CloudFormation stack with retry logic
                     echo "🚀 Starting CloudFormation deployment..."
-                    aws cloudformation deploy \\
-                        --template-file codepipeline/service-stack.yaml \\
-                        --stack-name ecs-service-${SERVICE_NAME} \\
-                        --parameter-overrides \\
-                            ServiceName=${SERVICE_NAME} \\
-                            ClusterName=${CLUSTER_NAME} \\
-                            ImageUri=${IMAGE_URI} \\
-                            ContainerPort=${CONTAINER_PORT} \\
-                            DesiredCount=${DESIRED_COUNT} \\
-                            Cpu=${CPU} \\
-                            Memory=${MEMORY} \\
-                            VpcId=${VPC_ID} \\
-                            SubnetIds=${SUBNET_IDS} \\
-                            TaskExecutionRoleArn=${TASK_EXEC_ROLE} \\
-                            TaskRoleArn=${TASK_ROLE} \\
-                            LogGroupName=/ecs/auto-deploy-prod \\
-                        --capabilities CAPABILITY_IAM \\
-                        --region ${AWS_REGION} \\
-                        --no-fail-on-empty-changeset
+                    
+                    MAX_RETRIES=5
+                    RETRY_COUNT=0
+                    DEPLOY_SUCCESS=false
+                    
+                    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                        echo "Deployment attempt $((RETRY_COUNT + 1))/$MAX_RETRIES..."
+                        
+                        aws cloudformation deploy \
+                            --template-file codepipeline/service-stack.yaml \
+                            --stack-name ecs-service-${SERVICE_NAME} \
+                            --parameter-overrides \
+                                ServiceName=${SERVICE_NAME} \
+                                ClusterName=${CLUSTER_NAME} \
+                                ImageUri=${IMAGE_URI} \
+                                ContainerPort=${CONTAINER_PORT} \
+                                DesiredCount=${DESIRED_COUNT} \
+                                Cpu=${CPU} \
+                                Memory=${MEMORY} \
+                                VpcId=${VPC_ID} \
+                                SubnetIds=${SUBNET_IDS} \
+                                TaskExecutionRoleArn=${TASK_EXEC_ROLE} \
+                                TaskRoleArn=${TASK_ROLE} \
+                                LogGroupName=/ecs/auto-deploy-prod \
+                            --capabilities CAPABILITY_IAM \
+                            --region ${AWS_REGION} \
+                            --no-fail-on-empty-changeset 2>&1 | tee /tmp/cfn_deploy.log
+                        
+                        DEPLOY_EXIT_CODE=${PIPESTATUS[0]}
+                        
+                        if [ $DEPLOY_EXIT_CODE -eq 0 ]; then
+                            echo "✅ CloudFormation deployment succeeded!"
+                            DEPLOY_SUCCESS=true
+                            break
+                        elif grep -q "UPDATE_IN_PROGRESS" /tmp/cfn_deploy.log; then
+                            echo "⏳ Stack is currently updating. Waiting 30 seconds before retry..."
+                            sleep 30
+                            RETRY_COUNT=$((RETRY_COUNT + 1))
+                        else
+                            echo "❌ CloudFormation deployment failed with error!"
+                            cat /tmp/cfn_deploy.log
+                            exit 1
+                        fi
+                    done
+                    
+                    if [ "$DEPLOY_SUCCESS" = false ]; then
+                        echo "❌ CloudFormation deployment failed after $MAX_RETRIES attempts!"
+                        exit 1
+                    fi
+
+                    echo "⏳ Waiting for ECS service to stabilize (blue-green deployment)..."
+
+                    # Wait for service to become stable (ensures new tasks are running)
+                    aws ecs wait services-stable \
+                        --cluster ${CLUSTER_NAME} \
+                        --services ${SERVICE_NAME} \
+                        --region ${AWS_REGION}
 
                     if [ $? -eq 0 ]; then
-                        echo "✅ CloudFormation deployment initiated successfully!"
-                        echo "⏳ Waiting for ECS service to stabilize (blue-green deployment)..."
-
-                        # Wait for service to become stable (ensures new tasks are running)
-                        aws ecs wait services-stable \\
-                            --cluster ${CLUSTER_NAME} \\
-                            --services ${SERVICE_NAME} \\
-                            --region ${AWS_REGION}
-
-                        if [ $? -eq 0 ]; then
-                            echo "✅ ECS service stabilized - new tasks are running!"
-                        else
-                            echo "⚠️  Service stabilization timed out, but continuing to health check..."
-                        fi
+                        echo "✅ ECS service stabilized - new tasks are running!"
                     else
-                        echo "❌ CloudFormation deployment failed!"
-                        exit 1
+                        echo "⚠️  Service stabilization timed out, but continuing to health check..."
                     fi
                 '''
             }

@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'ECS Service Deployment for Backend with ALB and DNS'
+Description: 'ECS Service Deployment for Backend - Minimal Stack for Updates'
 
 Parameters:
   ServiceName:
@@ -57,113 +57,7 @@ Parameters:
     Default: /ecs/auto-deploy-prod
     Description: CloudWatch log group name
 
-  HostedZoneId:
-    Type: String
-    Default: Z0937327HD133Q6A55PH
-    Description: Route53 Hosted Zone ID for webbyftw.co.in
-
-  DomainName:
-    Type: String
-    Default: api.webbyftw.co.in
-    Description: Domain name for the service
-
-Conditions:
-  CreateALBResources: !Equals [!Ref ServiceName, backend]
-
 Resources:
-  # ALB Security Group
-  ALBSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Condition: CreateALBResources
-    Properties:
-      GroupDescription: !Sub 'Security group for ${ServiceName} ALB'
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: Allow HTTP
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 0.0.0.0/0
-          Description: Allow HTTPS
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Name
-          Value: !Sub '${ServiceName}-alb-sg'
-
-  # Application Load Balancer
-  LoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Condition: CreateALBResources
-    Properties:
-      Type: application
-      Scheme: internet-facing
-      IpAddressType: ipv4
-      Subnets: !Ref SubnetIds
-      SecurityGroups:
-        - !Ref ALBSecurityGroup
-      Tags:
-        - Key: Name
-          Value: !Sub '${ServiceName}-alb'
-
-  # Target Group
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Condition: CreateALBResources
-    Properties:
-      Port: !Ref ContainerPort
-      Protocol: HTTP
-      VpcId: !Ref VpcId
-      TargetType: ip
-      HealthCheckEnabled: true
-      HealthCheckPath: /api/health
-      HealthCheckProtocol: HTTP
-      HealthCheckIntervalSeconds: 15
-      HealthCheckTimeoutSeconds: 10
-      HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 2
-      Matcher:
-        HttpCode: 200-299
-      DeregistrationDelay: 30
-      TargetGroupAttributes:
-        - Key: deregistration_delay.timeout_seconds
-          Value: '30'
-        - Key: stickiness.enabled
-          Value: 'false'
-      Tags:
-        - Key: Name
-          Value: !Sub '${ServiceName}-tg'
-
-  # ALB Listener
-  ALBListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Condition: CreateALBResources
-    Properties:
-      LoadBalancerArn: !Ref LoadBalancer
-      Port: 80
-      Protocol: HTTP
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref TargetGroup
-
-  # Route53 DNS Record
-  DNSRecord:
-    Type: AWS::Route53::RecordSet
-    Condition: CreateALBResources
-    Properties:
-      HostedZoneId: !Ref HostedZoneId
-      Name: !Ref DomainName
-      Type: A
-      AliasTarget:
-        HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
-        DNSName: !GetAtt LoadBalancer.DNSName
-        EvaluateTargetHealth: true
-
   # Security Group for ECS Service
   ServiceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -174,9 +68,8 @@ Resources:
         - IpProtocol: tcp
           FromPort: !Ref ContainerPort
           ToPort: !Ref ContainerPort
-          SourceSecurityGroupId: !If [CreateALBResources, !Ref ALBSecurityGroup, !Ref 'AWS::NoValue']
-          CidrIp: !If [CreateALBResources, !Ref 'AWS::NoValue', '0.0.0.0/0']
-          Description: Allow traffic from ALB or internet
+          CidrIp: 0.0.0.0/0
+          Description: Allow traffic to container port
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -184,6 +77,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-service-sg'
+        - Key: ManagedBy
+          Value: CloudFormation
 
   # ECS Task Definition
   TaskDefinition:
@@ -220,11 +115,12 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-task'
+        - Key: ManagedBy
+          Value: CloudFormation
 
   # ECS Service
   Service:
     Type: AWS::ECS::Service
-    DependsOn: !If [CreateALBResources, ALBListener, !Ref 'AWS::NoValue']
     Properties:
       ServiceName: !Ref ServiceName
       Cluster: !Ref ClusterName
@@ -237,13 +133,6 @@ Resources:
           SecurityGroups:
             - !Ref ServiceSecurityGroup
           Subnets: !Ref SubnetIds
-      LoadBalancers: !If
-        - CreateALBResources
-        - - ContainerName: !Ref ServiceName
-            ContainerPort: !Ref ContainerPort
-            TargetGroupArn: !Ref TargetGroup
-        - !Ref 'AWS::NoValue'
-      HealthCheckGracePeriodSeconds: !If [CreateALBResources, 60, !Ref 'AWS::NoValue']
       DeploymentConfiguration:
         MaximumPercent: 200
         MinimumHealthyPercent: 100
@@ -257,40 +146,30 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-service'
+        - Key: ManagedBy
+          Value: CloudFormation
 
 Outputs:
   ServiceName:
     Description: Name of the ECS service
     Value: !GetAtt Service.Name
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceName'
 
   ServiceArn:
     Description: ARN of the ECS service
     Value: !Ref Service
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceArn'
 
   TaskDefinitionArn:
     Description: ARN of the task definition
     Value: !Ref TaskDefinition
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskDefinitionArn'
 
   SecurityGroupId:
     Description: Security group ID for the service
     Value: !Ref ServiceSecurityGroup
-
-  LoadBalancerDNS:
-    Condition: CreateALBResources
-    Description: DNS name of the load balancer
-    Value: !GetAtt LoadBalancer.DNSName
-
-  LoadBalancerArn:
-    Condition: CreateALBResources
-    Description: ARN of the load balancer
-    Value: !Ref LoadBalancer
-
-  TargetGroupArn:
-    Condition: CreateALBResources
-    Description: ARN of the target group
-    Value: !Ref TargetGroup
-
-  DomainName:
-    Condition: CreateALBResources
-    Description: Custom domain name
-    Value: !Ref DomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupId'
