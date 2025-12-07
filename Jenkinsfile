@@ -143,12 +143,9 @@ pipeline {
                     DESIRED_COUNT=$(python3 -c "import yaml; print(yaml.safe_load(open('codepipeline/deploy.yaml'))['ecs']['desired_count'])")
                     CONTAINER_PORT=$(python3 -c "import yaml; print(yaml.safe_load(open('codepipeline/deploy.yaml'))['ecs']['container_port'])")
 
-                    # Get Pulumi outputs (VPC, subnets, IAM roles)
-                    echo "📊 Fetching infrastructure outputs from Pulumi..."
-                    aws s3 cp s3://terraform-state-ecs-autodeploy-724772079986/pulumi/.pulumi/stacks/prod.json /tmp/pulumi-outputs.json || true
-
-                    # Extract values from Pulumi state (fallback to hardcoded if needed)
-                    VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --query 'Vpcs[0].VpcId' --output text)
+                    # Get infrastructure values (VPC, subnets, IAM roles)
+                    echo "📊 Fetching infrastructure outputs..."
+                    VPC_ID="vpc-02d7f89b03701136a"
                     SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" --query 'Subnets[*].SubnetId' --output text | tr '\t' ',')
                     TASK_EXEC_ROLE=$(aws iam get-role --role-name auto-deploy-ecs-execution-role --query 'Role.Arn' --output text)
                     TASK_ROLE=$(aws iam get-role --role-name auto-deploy-ecs-task-role --query 'Role.Arn' --output text)
