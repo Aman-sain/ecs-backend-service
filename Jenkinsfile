@@ -181,6 +181,8 @@ pipeline {
                     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
                         echo "Deployment attempt $((RETRY_COUNT + 1))/$MAX_RETRIES..."
                         
+                        # Run deployment and capture output
+                        set +e
                         aws cloudformation deploy \
                             --template-file codepipeline/service-stack.yaml \
                             --stack-name ecs-service-${SERVICE_NAME} \
@@ -199,9 +201,10 @@ pipeline {
                                 LogGroupName=/ecs/auto-deploy-prod \
                             --capabilities CAPABILITY_IAM \
                             --region ${AWS_REGION} \
-                            --no-fail-on-empty-changeset 2>&1 | tee /tmp/cfn_deploy.log
+                            --no-fail-on-empty-changeset > /tmp/cfn_deploy.log 2>&1
                         
-                        DEPLOY_EXIT_CODE=${PIPESTATUS[0]}
+                        DEPLOY_EXIT_CODE=$?
+                        set -e
                         
                         if [ $DEPLOY_EXIT_CODE -eq 0 ]; then
                             echo "✅ CloudFormation deployment succeeded!"
@@ -209,6 +212,7 @@ pipeline {
                             break
                         elif grep -q "UPDATE_IN_PROGRESS" /tmp/cfn_deploy.log; then
                             echo "⏳ Stack is currently updating. Waiting 30 seconds before retry..."
+                            cat /tmp/cfn_deploy.log
                             sleep 30
                             RETRY_COUNT=$((RETRY_COUNT + 1))
                         else
