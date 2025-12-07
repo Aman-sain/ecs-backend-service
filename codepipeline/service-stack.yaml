@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'ECS Service Deployment for Backend - Minimal Version Without ALB'
+Description: 'ECS Service Deployment for Backend with ALB and Blue/Green Support'
 
 Parameters:
   ServiceName:
@@ -57,7 +57,105 @@ Parameters:
     Default: /ecs/auto-deploy-prod
     Description: CloudWatch log group name
 
+  HostedZoneId:
+    Type: String
+    Default: Z0937327HD133Q6A55PH
+    Description: Route53 Hosted Zone ID
+
+  DomainName:
+    Type: String
+    Default: api.webbyftw.co.in
+    Description: Domain name for the service
+
 Resources:
+  # ALB Security Group
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Security group for ${ServiceName} ALB'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTP
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${ServiceName}-alb-sg'
+
+  # Application Load Balancer
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets: !Ref SubnetIds
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${ServiceName}-alb'
+
+  # Target Group
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckPath: /api/health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: 200-299
+      DeregistrationDelay: 30
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+        - Key: stickiness.enabled
+          Value: 'false'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ServiceName}-tg'
+
+  # ALB Listener
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # Route53 DNS Record
+  DNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
+        DNSName: !GetAtt LoadBalancer.DNSName
+        EvaluateTargetHealth: true
+
   # Security Group for ECS Service
   ServiceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -68,8 +166,8 @@ Resources:
         - IpProtocol: tcp
           FromPort: !Ref ContainerPort
           ToPort: !Ref ContainerPort
-          CidrIp: 0.0.0.0/0
-          Description: Allow traffic to container port
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: Allow traffic from ALB
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -77,8 +175,6 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-service-sg'
-        - Key: ManagedBy
-          Value: CloudFormation
 
   # ECS Task Definition
   TaskDefinition:
@@ -115,12 +211,11 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-task'
-        - Key: ManagedBy
-          Value: CloudFormation
 
-  # ECS Service
+  # ECS Service with Blue/Green Deployment
   Service:
     Type: AWS::ECS::Service
+    DependsOn: ALBListener
     Properties:
       ServiceName: !Ref ServiceName
       Cluster: !Ref ClusterName
@@ -133,6 +228,11 @@ Resources:
           SecurityGroups:
             - !Ref ServiceSecurityGroup
           Subnets: !Ref SubnetIds
+      LoadBalancers:
+        - ContainerName: !Ref ServiceName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+      HealthCheckGracePeriodSeconds: 60
       DeploymentConfiguration:
         MaximumPercent: 200
         MinimumHealthyPercent: 100
@@ -146,30 +246,32 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ServiceName}-service'
-        - Key: ManagedBy
-          Value: CloudFormation
 
 Outputs:
   ServiceName:
     Description: Name of the ECS service
     Value: !GetAtt Service.Name
-    Export:
-      Name: !Sub '${AWS::StackName}-ServiceName'
 
   ServiceArn:
     Description: ARN of the ECS service
     Value: !Ref Service
-    Export:
-      Name: !Sub '${AWS::StackName}-ServiceArn'
 
   TaskDefinitionArn:
     Description: ARN of the task definition
     Value: !Ref TaskDefinition
-    Export:
-      Name: !Sub '${AWS::StackName}-TaskDefinitionArn'
 
-  SecurityGroupId:
-    Description: Security group ID for the service
-    Value: !Ref ServiceSecurityGroup
-    Export:
-      Name: !Sub '${AWS::StackName}-SecurityGroupId'
+  LoadBalancerDNS:
+    Description: DNS name of the load balancer
+    Value: !GetAtt LoadBalancer.DNSName
+
+  LoadBalancerArn:
+    Description: ARN of the load balancer
+    Value: !Ref LoadBalancer
+
+  TargetGroupArn:
+    Description: ARN of the target group
+    Value: !Ref TargetGroup
+
+  DomainName:
+    Description: Custom domain name
+    Value: !Ref DomainName

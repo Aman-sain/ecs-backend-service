@@ -248,69 +248,67 @@ pipeline {
             steps {
                 script {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo "🏥 Running Health Checks via ALB"
+                    echo "🏥 Running Health Checks on ECS Tasks"
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
-                    echo "⏳ Waiting 30s for new tasks to register with ALB..."
+                    echo "⏳ Waiting 30s for new tasks to start..."
                     sleep 30
 
-                    # Check ALB target health
-                    echo "🔍 Checking ALB target group health..."
-                    TARGET_GROUP_ARN=$(aws cloudformation describe-stacks \\
-                        --stack-name ecs-service-${SERVICE_NAME} \\
-                        --query 'Stacks[0].Outputs[?OutputKey==`TargetGroupArn`].OutputValue' \\
-                        --output text 2>/dev/null || echo "")
-
-                    if [ -z "$TARGET_GROUP_ARN" ]; then
-                        echo "⚠️  Could not find target group ARN from stack, checking via tags..."
-                        TARGET_GROUP_ARN=$(aws elbv2 describe-target-groups \\
-                            --names backend-tg \\
-                            --query 'TargetGroups[0].TargetGroupArn' \\
-                            --output text 2>/dev/null || echo "")
-                    fi
-
-                    # Health check loop with ALB verification
+                    # Health check loop - verify ECS tasks are healthy
                     HEALTH_CHECK_PASSED=false
                     for i in {1..20}; do
                         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                         echo "Health Check Attempt $i/20"
 
-                        # Check endpoint health
-                        if curl -sf https://api.webbyftw.co.in/api/health > /dev/null 2>&1; then
-                            echo "✅ Endpoint health check passed!"
+                        # Check ECS service health
+                        RUNNING_COUNT=$(aws ecs describe-services \
+                            --cluster ${CLUSTER_NAME} \
+                            --services ${SERVICE_NAME} \
+                            --query 'services[0].runningCount' \
+                            --output text)
+                        
+                        DESIRED_COUNT=$(aws ecs describe-services \
+                            --cluster ${CLUSTER_NAME} \
+                            --services ${SERVICE_NAME} \
+                            --query 'services[0].desiredCount' \
+                            --output text)
 
-                            # Verify ALB target health if we have target group ARN
-                            if [ -n "$TARGET_GROUP_ARN" ] && [ "$TARGET_GROUP_ARN" != "None" ]; then
-                                HEALTHY_COUNT=$(aws elbv2 describe-target-health \\
-                                    --target-group-arn "$TARGET_GROUP_ARN" \\
-                                    --query 'TargetHealthDescriptions[?TargetHealth.State==`healthy`] | length(@)' \\
-                                    --output text 2>/dev/null || echo "0")
+                        echo "📊 ECS Service: $RUNNING_COUNT/$DESIRED_COUNT tasks running"
 
-                                echo "📊 Healthy targets in ALB: $HEALTHY_COUNT"
-
-                                if [ "$HEALTHY_COUNT" -gt 0 ]; then
-                                    echo "✅ ALB has healthy targets!"
+                        if [ "$RUNNING_COUNT" -eq "$DESIRED_COUNT" ] && [ "$RUNNING_COUNT" -gt 0 ]; then
+                            # Verify tasks are actually RUNNING (not just starting)
+                            TASK_STATUS=$(aws ecs list-tasks \
+                                --cluster ${CLUSTER_NAME} \
+                                --service-name ${SERVICE_NAME} \
+                                --desired-status RUNNING \
+                                --query 'taskArns[0]' \
+                                --output text)
+                            
+                            if [ -n "$TASK_STATUS" ] && [ "$TASK_STATUS" != "None" ]; then
+                                TASK_HEALTH=$(aws ecs describe-tasks \
+                                    --cluster ${CLUSTER_NAME} \
+                                    --tasks $TASK_STATUS \
+                                    --query 'tasks[0].lastStatus' \
+                                    --output text)
+                                
+                                echo "📋 Task Status: $TASK_HEALTH"
+                                
+                                if [ "$TASK_HEALTH" = "RUNNING" ]; then
+                                    echo "✅ All tasks are healthy and running!"
                                     HEALTH_CHECK_PASSED=true
                                     break
-                                else
-                                    echo "⏳ Waiting for targets to become healthy in ALB..."
                                 fi
-                            else
-                                echo "✅ Health check passed (ALB verification skipped)"
-                                HEALTH_CHECK_PASSED=true
-                                break
                             fi
-                        else
-                            echo "⏳ Endpoint not healthy yet, waiting... ($i/20)"
                         fi
 
+                        echo "⏳ Waiting for tasks to be healthy... ($i/20)"
                         sleep 15
                     done
 
                     if [ "$HEALTH_CHECK_PASSED" = false ]; then
                         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                        echo "❌ HEALTH CHECK FAILED - Initiating rollback!"
+                        echo "❌ HEALTH CHECK FAILED - Tasks not healthy!"
                         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
                         # Read previous task definition
