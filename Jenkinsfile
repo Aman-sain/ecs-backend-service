@@ -250,9 +250,24 @@ pipeline {
         }
 
         always {
-            // Cleanup
-            sh 'docker system prune -f || true'
-            cleanWs(deleteDirs: true, disableDeferredWipeout: true, patterns: [[pattern: '.git', type: 'EXCLUDE']])
+            script {
+                // Docker cleanup
+                try {
+                    sh 'docker system prune -f || true'
+                } catch (Exception e) {
+                    echo "Docker cleanup: ${e.message}"
+                }
+                // Workspace cleanup with permission handling
+                try {
+                    sh '''
+                        # Remove pytest cache and other files with sudo if needed
+                        chmod -R 777 ${WORKSPACE} || true
+                        rm -rf ${WORKSPACE}/* ${WORKSPACE}/.* || true
+                    '''
+                } catch (Exception e) {
+                    echo "Workspace cleanup: ${e.message}"
+                }
+            }
         }
     }
 }
