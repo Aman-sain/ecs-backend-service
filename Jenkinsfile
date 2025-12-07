@@ -203,7 +203,7 @@ pipeline {
                                     ParameterKey=Cpu,ParameterValue=${CPU} \
                                     ParameterKey=Memory,ParameterValue=${MEMORY} \
                                     ParameterKey=VpcId,ParameterValue=${VPC_ID} \
-                                    "ParameterKey=SubnetIds,ParameterValue=${SUBNET_IDS}" \
+                                    ParameterKey=SubnetIds,ParameterValue=\"${SUBNET_IDS}\" \
                                     ParameterKey=TaskExecutionRoleArn,ParameterValue=${TASK_EXEC_ROLE} \
                                     ParameterKey=TaskRoleArn,ParameterValue=${TASK_ROLE} \
                                 --capabilities CAPABILITY_IAM \
@@ -236,7 +236,7 @@ pipeline {
                                     ParameterKey=Cpu,ParameterValue=${CPU} \
                                     ParameterKey=Memory,ParameterValue=${MEMORY} \
                                     ParameterKey=VpcId,ParameterValue=${VPC_ID} \
-                                    "ParameterKey=SubnetIds,ParameterValue=${SUBNET_IDS}" \
+                                    ParameterKey=SubnetIds,ParameterValue=\"${SUBNET_IDS}\" \
                                     ParameterKey=TaskExecutionRoleArn,ParameterValue=${TASK_EXEC_ROLE} \
                                     ParameterKey=TaskRoleArn,ParameterValue=${TASK_ROLE} \
                                 --capabilities CAPABILITY_IAM \
