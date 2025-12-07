@@ -16,19 +16,33 @@ pipeline {
     }
 
     stages {
+        stage('🧹 Clean Workspace') {
+            steps {
+                script {
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "🧹 Cleaning workspace before checkout"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                }
+                sh '''
+                    # Force clean workspace with permission fix
+                    sudo chmod -R 777 ${WORKSPACE} || chmod -R 777 ${WORKSPACE} || true
+                    rm -rf ${WORKSPACE}/* ${WORKSPACE}/.* || true
+                    echo "✓ Workspace cleaned"
+                '''
+            }
+        }
+
         stage('🧹 Checkout Code') {
             steps {
                 script {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo "🧹 Checking out code with clean workspace"
+                    echo "🧹 Checking out code"
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
-                // Clean checkout
                 checkout([
                     $class: 'GitSCM',
                     branches: [[name: '*/main']],
                     extensions: [
-                        [$class: 'CleanBeforeCheckout'],
                         [$class: 'CloneOption', depth: 1, shallow: true]
                     ],
                     userRemoteConfigs: [[
