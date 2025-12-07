@@ -171,52 +171,106 @@ pipeline {
                         echo "NONE" > /tmp/previous_task_def.txt
                     fi
 
-                    # Deploy CloudFormation stack with retry logic
+                    # Deploy CloudFormation stack (create or update)
                     echo "🚀 Starting CloudFormation deployment..."
                     
                     MAX_RETRIES=5
                     RETRY_COUNT=0
                     DEPLOY_SUCCESS=false
                     
+                    # Check if stack exists
+                    STACK_EXISTS=$(aws cloudformation describe-stacks \
+                        --stack-name ecs-service-${SERVICE_NAME} \
+                        --region ${AWS_REGION} \
+                        --query 'Stacks[0].StackStatus' \
+                        --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+                    
                     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
                         echo "Deployment attempt $((RETRY_COUNT + 1))/$MAX_RETRIES..."
                         
-                        # Run deployment and capture output
                         set +e
-                        aws cloudformation deploy \
-                            --template-file codepipeline/service-stack.yaml \
-                            --stack-name ecs-service-${SERVICE_NAME} \
-                            --parameter-overrides \
-                                ServiceName=${SERVICE_NAME} \
-                                ClusterName=${CLUSTER_NAME} \
-                                ImageUri=${IMAGE_URI} \
-                                ContainerPort=${CONTAINER_PORT} \
-                                DesiredCount=${DESIRED_COUNT} \
-                                Cpu=${CPU} \
-                                Memory=${MEMORY} \
-                                VpcId=${VPC_ID} \
-                                SubnetIds=${SUBNET_IDS} \
-                                TaskExecutionRoleArn=${TASK_EXEC_ROLE} \
-                                TaskRoleArn=${TASK_ROLE} \
-                                LogGroupName=/ecs/auto-deploy-prod \
-                            --capabilities CAPABILITY_IAM \
-                            --region ${AWS_REGION} \
-                            --no-fail-on-empty-changeset > /tmp/cfn_deploy.log 2>&1
-                        
-                        DEPLOY_EXIT_CODE=$?
+                        if [ "$STACK_EXISTS" = "DOES_NOT_EXIST" ]; then
+                            echo "📝 Creating new stack..."
+                            aws cloudformation create-stack \
+                                --stack-name ecs-service-${SERVICE_NAME} \
+                                --template-body file://codepipeline/service-stack.yaml \
+                                --parameters \
+                                    ParameterKey=ServiceName,ParameterValue=${SERVICE_NAME} \
+                                    ParameterKey=ClusterName,ParameterValue=${CLUSTER_NAME} \
+                                    ParameterKey=ImageUri,ParameterValue=${IMAGE_URI} \
+                                    ParameterKey=ContainerPort,ParameterValue=${CONTAINER_PORT} \
+                                    ParameterKey=DesiredCount,ParameterValue=${DESIRED_COUNT} \
+                                    ParameterKey=Cpu,ParameterValue=${CPU} \
+                                    ParameterKey=Memory,ParameterValue=${MEMORY} \
+                                    ParameterKey=VpcId,ParameterValue=${VPC_ID} \
+                                    ParameterKey=SubnetIds,ParameterValue=\"${SUBNET_IDS}\" \
+                                    ParameterKey=TaskExecutionRoleArn,ParameterValue=${TASK_EXEC_ROLE} \
+                                    ParameterKey=TaskRoleArn,ParameterValue=${TASK_ROLE} \
+                                --capabilities CAPABILITY_IAM \
+                                --region ${AWS_REGION} > /tmp/cfn_deploy.log 2>&1
+                            
+                            DEPLOY_EXIT_CODE=$?
+                            if [ $DEPLOY_EXIT_CODE -eq 0 ]; then
+                                echo "⏳ Waiting for stack creation..."
+                                aws cloudformation wait stack-create-complete \
+                                    --stack-name ecs-service-${SERVICE_NAME} \
+                                    --region ${AWS_REGION}
+                                WAIT_EXIT_CODE=$?
+                                if [ $WAIT_EXIT_CODE -eq 0 ]; then
+                                    echo "✅ Stack created successfully!"
+                                    DEPLOY_SUCCESS=true
+                                    break
+                                fi
+                            fi
+                        else
+                            echo "🔄 Updating existing stack..."
+                            aws cloudformation update-stack \
+                                --stack-name ecs-service-${SERVICE_NAME} \
+                                --template-body file://codepipeline/service-stack.yaml \
+                                --parameters \
+                                    ParameterKey=ServiceName,ParameterValue=${SERVICE_NAME} \
+                                    ParameterKey=ClusterName,ParameterValue=${CLUSTER_NAME} \
+                                    ParameterKey=ImageUri,ParameterValue=${IMAGE_URI} \
+                                    ParameterKey=ContainerPort,ParameterValue=${CONTAINER_PORT} \
+                                    ParameterKey=DesiredCount,ParameterValue=${DESIRED_COUNT} \
+                                    ParameterKey=Cpu,ParameterValue=${CPU} \
+                                    ParameterKey=Memory,ParameterValue=${MEMORY} \
+                                    ParameterKey=VpcId,ParameterValue=${VPC_ID} \
+                                    ParameterKey=SubnetIds,ParameterValue=\"${SUBNET_IDS}\" \
+                                    ParameterKey=TaskExecutionRoleArn,ParameterValue=${TASK_EXEC_ROLE} \
+                                    ParameterKey=TaskRoleArn,ParameterValue=${TASK_ROLE} \
+                                --capabilities CAPABILITY_IAM \
+                                --region ${AWS_REGION} > /tmp/cfn_deploy.log 2>&1
+                            
+                            DEPLOY_EXIT_CODE=$?
+                            if [ $DEPLOY_EXIT_CODE -eq 0 ]; then
+                                echo "⏳ Waiting for stack update..."
+                                aws cloudformation wait stack-update-complete \
+                                    --stack-name ecs-service-${SERVICE_NAME} \
+                                    --region ${AWS_REGION}
+                                WAIT_EXIT_CODE=$?
+                                if [ $WAIT_EXIT_CODE -eq 0 ]; then
+                                    echo "✅ Stack updated successfully!"
+                                    DEPLOY_SUCCESS=true
+                                    break
+                                fi
+                            elif grep -q "No updates are to be performed" /tmp/cfn_deploy.log; then
+                                echo "✅ No changes needed - stack is up to date!"
+                                DEPLOY_SUCCESS=true
+                                break
+                            fi
+                        fi
                         set -e
                         
-                        if [ $DEPLOY_EXIT_CODE -eq 0 ]; then
-                            echo "✅ CloudFormation deployment succeeded!"
-                            DEPLOY_SUCCESS=true
-                            break
-                        elif grep -q "UPDATE_IN_PROGRESS" /tmp/cfn_deploy.log; then
+                        # Check for specific errors
+                        if grep -q "UPDATE_IN_PROGRESS" /tmp/cfn_deploy.log; then
                             echo "⏳ Stack is currently updating. Waiting 30 seconds before retry..."
                             cat /tmp/cfn_deploy.log
                             sleep 30
                             RETRY_COUNT=$((RETRY_COUNT + 1))
+                            STACK_EXISTS="EXISTS"  # Update for next iteration
                         else
-                            echo "❌ CloudFormation deployment failed with error!"
+                            echo "❌ CloudFormation operation failed!"
                             cat /tmp/cfn_deploy.log
                             exit 1
                         fi
