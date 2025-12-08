@@ -149,7 +149,7 @@ pipeline {
                     echo "🛡️ Running Trivy Image Scan"
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                     // Scan the base image or build a temp one for scanning
-                     docker build -t ${SERVICE_NAME}:scan .
+                     sh "docker build -t ${SERVICE_NAME}:scan ."
                      sh "trivy image ${SERVICE_NAME}:scan --severity HIGH,CRITICAL --format table -o trivy-image-report.html"
                 }
             }
