@@ -18,7 +18,7 @@ Parameters:
 
   ContainerPort:
     Type: Number
-    Default: 8000
+    Default: 80
     Description: Port the container listens on
 
   DesiredCount:

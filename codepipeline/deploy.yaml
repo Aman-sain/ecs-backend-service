@@ -5,7 +5,7 @@ ecs:
   cpu: 512
   memory: 1024
   desired_count: 2
-  container_port: 8000
+  container_port: 80
   health_check_path: /api/health
 
 environment:
