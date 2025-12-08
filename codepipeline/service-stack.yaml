@@ -68,6 +68,57 @@ Parameters:
     Description: Domain name for the service
 
 Resources:
+  # EFS File System
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      PerformanceMode: generalPurpose
+      Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ServiceName}-efs'
+
+  # EFS Security Group
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Security group for ${ServiceName} EFS'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref ServiceSecurityGroup
+          Description: Allow NFS from ECS Service
+      Tags:
+        - Key: Name
+          Value: !Sub '${ServiceName}-efs-sg'
+
+  # Mount Targets (One per subnet)
+  MountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Select [0, !Ref SubnetIds]
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  MountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Select [1, !Ref SubnetIds]
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  MountTarget3:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Select [2, !Ref SubnetIds]
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
   # Security Group for ECS Service - OPEN TO WORLD for Direct Access
   ServiceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -100,6 +151,11 @@ Resources:
         - FARGATE
       ExecutionRoleArn: !Ref TaskExecutionRoleArn
       TaskRoleArn: !Ref TaskRoleArn
+      Volumes:
+        - Name: db-volume
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            TransitEncryption: ENABLED
       ContainerDefinitions:
         - Name: !Ref ServiceName
           Image: !Ref ImageUri
@@ -107,11 +163,14 @@ Resources:
           PortMappings:
             - ContainerPort: !Ref ContainerPort
               Protocol: tcp
+          MountPoints:
+            - SourceVolume: db-volume
+              ContainerPath: /app/db_data
           Environment:
             - Name: ENVIRONMENT
               Value: production
             - Name: DATABASE_URL
-              Value: sqlite:///./employees.db
+              Value: sqlite:///./db_data/employees.db
             - Name: PROJECT_NAME
               Value: Enterprise Employee Management System
           LogConfiguration:
@@ -166,4 +225,8 @@ Outputs:
   TaskDefinitionArn:
     Description: ARN of the task definition
     Value: !Ref TaskDefinition
+
+  FileSystemId:
+    Description: usage EFS FileSystem ID
+    Value: !Ref FileSystem
 
