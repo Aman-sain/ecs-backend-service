@@ -24,10 +24,9 @@ pipeline {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
-                    # Force clean workspace with permission fix
-                    sudo chmod -R 777 ${WORKSPACE} || chmod -R 777 ${WORKSPACE} || true
-                    rm -rf ${WORKSPACE}/* ${WORKSPACE}/.* || true
-                    echo "✓ Workspace cleaned"
+                    # Force clean workspace using Docker (handles root-owned files)
+                    docker run --rm -v ${WORKSPACE}:/workspace alpine sh -c "rm -rf /workspace/* /workspace/.* || true"
+                    echo "✓ Workspace cleaned (via Docker)"
                 '''
             }
         }
