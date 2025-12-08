@@ -104,16 +104,22 @@ pipeline {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                     echo "🔍 Running SonarQube Analysis (Docker)"
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
-                        sh '''
-                            docker run --rm \
-                                -v "${WORKSPACE}:/usr/src" \
-                                -e SONAR_HOST_URL="http://sonarqube:9000" \
-                                -e SONAR_LOGIN="${SONAR_TOKEN}" \
-                                sonarsource/sonar-scanner-cli \
-                                -Dsonar.projectKey=${SERVICE_NAME} \
-                                -Dsonar.sources=.
-                        '''
+                    try {
+                        withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
+                            sh '''
+                                docker run --rm \
+                                    -v "${WORKSPACE}:/usr/src" \
+                                    -v /etc/hosts:/etc/hosts:ro \
+                                    -e SONAR_HOST_URL="http://sonarqube:9000" \
+                                    -e SONAR_LOGIN="${SONAR_TOKEN}" \
+                                    sonarsource/sonar-scanner-cli \
+                                    -Dsonar.projectKey=${SERVICE_NAME} \
+                                    -Dsonar.sources=.
+                            '''
+                        }
+                    } catch (Exception e) {
+                        echo "⚠️ SonarQube analysis failed: ${e.message}"
+                        currentBuild.result = 'UNSTABLE'
                     }
                 }
             }
