@@ -145,8 +145,8 @@ pipeline {
 
                     # Get infrastructure values (VPC, subnets, IAM roles)
                     echo "📊 Fetching infrastructure outputs..."
-                    VPC_ID="vpc-02d7f89b03701136a"
-                    SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" --query 'Subnets[*].SubnetId' --output text | tr '\\t' ',')
+                    VPC_ID="vpc-066ec07c427303e8b"
+                    SUBNET_IDS='subnet-05f141a577517f739,subnet-0707e9e2240b0c1c6,subnet-0fa19e6646dfe40c2'
                     TASK_EXEC_ROLE=$(aws iam get-role --role-name auto-deploy-ecs-execution-role --query 'Role.Arn' --output text)
                     TASK_ROLE=$(aws iam get-role --role-name auto-deploy-ecs-task-role --query 'Role.Arn' --output text)
 
