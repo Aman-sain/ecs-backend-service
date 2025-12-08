@@ -102,17 +102,18 @@ pipeline {
             steps {
                 script {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo "🔍 Running SonarQube Analysis"
+                    echo "🔍 Running SonarQube Analysis (Docker)"
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    def scannerHome = tool 'SonarQubeScanner'
-                    withSonarQubeEnv('SonarQube') {
-                        sh """
-                            ${scannerHome}/bin/sonar-scanner \\
-                            -Dsonar.projectKey=${SERVICE_NAME} \\
-                            -Dsonar.sources=. \\
-                            -Dsonar.host.url=http://sonarqube:9000 \\
-                            -Dsonar.login=${SONAR_TOKEN}
-                        """
+                    withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
+                        sh '''
+                            docker run --rm \
+                                -v "${WORKSPACE}:/usr/src" \
+                                -e SONAR_HOST_URL="http://sonarqube:9000" \
+                                -e SONAR_LOGIN="${SONAR_TOKEN}" \
+                                sonarsource/sonar-scanner-cli \
+                                -Dsonar.projectKey=${SERVICE_NAME} \
+                                -Dsonar.sources=.
+                        '''
                     }
                 }
             }
@@ -122,9 +123,16 @@ pipeline {
             steps {
                 script {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo "🛡️ Running Trivy Filesystem Scan"
+                    echo "🛡️ Running Trivy Filesystem Scan (Docker)"
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    sh "trivy fs . --format table -o trivy-fs-report.html"
+                    sh '''
+                        docker run --rm \
+                            -v "${WORKSPACE}:/workspace" \
+                            aquasec/trivy fs /workspace \
+                            --format table \
+                            --scanners vuln,config,secret \
+                            --exit-code 0
+                    '''
                 }
             }
         }
@@ -133,11 +141,22 @@ pipeline {
             steps {
                 script {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo "🛡️ Running Trivy Image Scan"
+                    echo "🛡️ Running Trivy Image Scan (Docker)"
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    // Scan the base image or build a temp one for scanning
-                     sh "docker build -t ${SERVICE_NAME}:scan ."
-                     sh "trivy image ${SERVICE_NAME}:scan --severity HIGH,CRITICAL --format table -o trivy-image-report.html"
+                    
+                    // Build temp image
+                    sh "docker build -t ${SERVICE_NAME}:scan ."
+                    
+                    // Scan using docker-in-docker style
+                    sh '''
+                        docker run --rm \
+                            -v /var/run/docker.sock:/var/run/docker.sock \
+                            aquasec/trivy image \
+                            ${SERVICE_NAME}:scan \
+                            --severity HIGH,CRITICAL \
+                            --format table \
+                            --exit-code 0
+                    '''
                 }
             }
         }
