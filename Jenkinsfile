@@ -172,8 +172,6 @@ pipeline {
                     fi
 
                     # Deploy CloudFormation stack (create or update)
-                    echo "🔍 Debug: Checking content of service-stack.yaml..."
-                    cat codepipeline/service-stack.yaml
                     echo "🚀 Starting CloudFormation deployment..."
                     
                     MAX_RETRIES=5
