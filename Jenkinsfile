@@ -24,8 +24,18 @@ pipeline {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
-                    # Force clean workspace using Docker (handles root-owned files)
-                    docker run --rm -v ${WORKSPACE}:/workspace alpine sh -c "rm -rf /workspace/* /workspace/.* || true"
+                    # Use docker to remove files (safer patterns) and handle permission issues
+                    set -e
+                    TARGET="${WORKSPACE}"
+                    if [ -z "$TARGET" ]; then
+                      echo "WORKSPACE not set! Exiting."
+                      exit 1
+                    fi
+
+                    docker run --rm -v "${TARGET}":/workspace alpine sh -c "
+                        # remove everything but avoid matching '.' and '..'
+                        rm -rf /workspace/* /workspace/.[!.]* /workspace/..?* || true
+                    "
                     echo "✓ Workspace cleaned (via Docker)"
                 '''
             }
@@ -39,13 +49,16 @@ pipeline {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
-                    # Manual git clone to avoid Jenkins workspace cleanup issues
-                    git clone --depth 1 --branch main https://github.com/Aman-sain/ecs-backend-service.git ${WORKSPACE}/repo
+                    # Manual shallow clone (avoid workspace cleanup issues) then rsync into workspace
+                    set -e
+                    TMP_DIR="${WORKSPACE}/repo"
+                    git clone --depth 1 --branch main https://github.com/Aman-sain/ecs-backend-service.git "${TMP_DIR}"
 
-                    # Move contents to workspace root
-                    mv ${WORKSPACE}/repo/* ${WORKSPACE}/ || true
-                    mv ${WORKSPACE}/repo/.* ${WORKSPACE}/ 2>/dev/null || true
-                    rm -rf ${WORKSPACE}/repo
+                    # Use rsync to reliably copy files (including dotfiles) and delete extras
+                    rsync -a --delete "${TMP_DIR}/" "${WORKSPACE}/"
+
+                    # cleanup temp clone
+                    rm -rf "${TMP_DIR}"
 
                     echo "✓ Code checked out successfully"
                 '''
@@ -60,6 +73,7 @@ pipeline {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
+                    set -e
                     # Validate deploy.yaml exists
                     if [ ! -f "codepipeline/deploy.yaml" ]; then
                         echo "❌ codepipeline/deploy.yaml not found!"
@@ -72,8 +86,8 @@ pipeline {
                         exit 1
                     fi
 
-                    # Validate deploy.yaml syntax
-                    python3 -c "import yaml; yaml.safe_load(open('codepipeline/deploy.yaml'))"
+                    # Validate deploy.yaml syntax (pyyaml)
+                    python3 -c "import yaml,sys; yaml.safe_load(open('codepipeline/deploy.yaml'))"
                     echo "✓ Configuration valid"
                 '''
             }
@@ -87,12 +101,57 @@ pipeline {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
+                    set -e
                     # Run tests in Docker container
-                    docker run --rm -v $PWD:/app -w /app python:3.11 bash -c "
+                    docker run --rm -v "$PWD":/app -w /app python:3.11 bash -c "
                         pip install -q -r requirements.txt pytest pytest-cov &&
                         pytest --maxfail=1 --disable-warnings -v || true
                     "
                 '''
+            }
+        }
+
+        stage('🔍 SonarQube Analysis') {
+            steps {
+                script {
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "🔍 Running SonarQube Analysis"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    def scannerHome = tool 'SonarQubeScanner'
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \\
+                            -Dsonar.projectKey=${SERVICE_NAME} \\
+                            -Dsonar.sources=. \\
+                            -Dsonar.host.url=http://sonarqube:9000 \\
+                            -Dsonar.login=${SONAR_TOKEN}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('🛡️ Trivy FS Scan') {
+            steps {
+                script {
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "🛡️ Running Trivy Filesystem Scan"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    sh "trivy fs . --format table -o trivy-fs-report.html"
+                }
+            }
+        }
+
+        stage('🛡️ Trivy Image Scan') {
+            steps {
+                script {
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "🛡️ Running Trivy Image Scan"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    // Scan the base image or build a temp one for scanning
+                     docker build -t ${SERVICE_NAME}:scan .
+                     sh "trivy image ${SERVICE_NAME}:scan --severity HIGH,CRITICAL --format table -o trivy-image-report.html"
+                }
             }
         }
 
@@ -104,6 +163,7 @@ pipeline {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
+                    set -e
                     # ECR Login
                     aws ecr get-login-password --region ${AWS_REGION} | \
                         docker login --username AWS --password-stdin \
@@ -133,6 +193,7 @@ pipeline {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
+                    set -e
                     # Parse deploy.yaml configuration
                     pip3 install -q pyyaml
 
@@ -161,6 +222,7 @@ pipeline {
 
                     # Save current task definition for rollback
                     echo "📋 Saving current deployment state for rollback..."
+                    PREVIOUS_TASK_DEF="NONE"
                     if aws ecs describe-services --cluster ${CLUSTER_NAME} --services ${SERVICE_NAME} --query 'services[0].taskDefinition' --output text 2>/dev/null | grep -q 'arn:aws'; then
                         PREVIOUS_TASK_DEF=$(aws ecs describe-services --cluster ${CLUSTER_NAME} --services ${SERVICE_NAME} --query 'services[0].taskDefinition' --output text)
                         echo "Previous task definition: $PREVIOUS_TASK_DEF"
@@ -176,16 +238,15 @@ pipeline {
                     MAX_RETRIES=5
                     RETRY_COUNT=0
                     DEPLOY_SUCCESS=false
-                    
-                    # Check if stack exists
+
+                    # Check if stack exists (single place)
                     STACK_EXISTS=$(aws cloudformation describe-stacks \
                         --stack-name ecs-service-${SERVICE_NAME} \
                         --region ${AWS_REGION} \
                         --query 'Stacks[0].StackStatus' \
                         --output text 2>/dev/null || echo "DOES_NOT_EXIST")
                     
-                    
-                    # Create parameters JSON file to strictly avoid shell parsing issues with lists
+                    # Create parameters JSON file
                     cat <<EOF > params.json
 [
   { "ParameterKey": "ServiceName", "ParameterValue": "${SERVICE_NAME}" },
@@ -202,13 +263,6 @@ pipeline {
 ]
 EOF
 
-                    # Check if stack exists
-                    STACK_EXISTS=$(aws cloudformation describe-stacks \
-                        --stack-name ecs-service-${SERVICE_NAME} \
-                        --region ${AWS_REGION} \
-                        --query 'Stacks[0].StackStatus' \
-                        --output text 2>/dev/null || echo "DOES_NOT_EXIST")
-                    
                     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
                         echo "Deployment attempt $((RETRY_COUNT + 1))/$MAX_RETRIES..."
                         
@@ -310,6 +364,7 @@ EOF
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
+                    set -e
                     echo "⏳ Waiting 30s for new tasks to start..."
                     sleep 30
 
@@ -391,10 +446,11 @@ EOF
                             echo "❌ Health checks failed on initial deployment!"
                         fi
 
-                        # Show recent logs to help debug
+                        # Show recent logs to help debug (use service-specific log group)
+                        LOG_GROUP="/ecs/auto-deploy-${SERVICE_NAME}"
                         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                        echo "📋 Recent Container Logs (last 50 lines):"
-                        aws logs tail /ecs/auto-deploy-prod --follow --since 5m --filter-pattern "" --format short | head -50 || true
+                        echo "📋 Recent Container Logs (last 50 lines) from ${LOG_GROUP}:"
+                        aws logs tail "${LOG_GROUP}" --follow --since 5m --format short || true | head -50
 
                         exit 1
                     fi
@@ -410,6 +466,7 @@ EOF
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
+                    set -e
                     # 1. Find the running task ARN
                     TASK_ARN=$(aws ecs list-tasks \\
                         --cluster ${CLUSTER_NAME} \\
@@ -434,14 +491,15 @@ EOF
 
                     echo "📋 Found ENI ID: $ENI_ID"
 
-                    # 3. Get Public IP from ENI
+                    # 3. Get Public IP from ENI (may be empty if task is in private subnet / behind ALB)
                     PUBLIC_IP=$(aws ec2 describe-network-interfaces \\
                         --network-interface-ids $ENI_ID \\
                         --query 'NetworkInterfaces[0].Association.PublicIp' \\
                         --output text)
 
-                    if [ -z "$PUBLIC_IP" ]; then
-                        echo "❌ Could not find Public IP for task!"
+                    if [ -z "$PUBLIC_IP" ] || [ "$PUBLIC_IP" = "None" ]; then
+                        echo "❌ Could not find Public IP for task! It may be running in private subnets or behind a Load Balancer."
+                        echo "👉 Suggestion: update DNS to point to the Load Balancer (ALB) instead of the task ENI."
                         exit 1
                     fi
 
@@ -475,7 +533,7 @@ EOF
                         --hosted-zone-id Z0937327HD133Q6A55PH \\
                         --change-batch file://dns-change.json
 
-                    echo "✅ DNS Updated successfully. API should be accessible at http://api.webbyftw.co.in in ~60s."
+                    echo "✅ DNS Updated successfully. API should be accessible at https://api.webbyftw.co.in in ~60s."
                 '''
             }
         }
@@ -489,6 +547,7 @@ EOF
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
+                    set -e
                     # Check running tasks
                     echo "Checking ECS service status..."
                     aws ecs describe-services \
@@ -517,55 +576,52 @@ EOF
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 echo "✅ BACKEND DEPLOYMENT SUCCESSFUL"
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                echo "Service URL: https://api.webbyftw.co.in/api"
-                echo "API Docs: https://api.webbyftw.co.in/api/docs"
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                
+                def message = """
+✅ Backend Deployment Successful!
+Build: #${env.BUILD_NUMBER}
+Service: Backend API
+Cluster: ${env.CLUSTER_NAME}
 
-                emailext (
-                    subject: "✅ Backend Deployment Successful - Build #${env.BUILD_NUMBER}",
-                    body: """
-                    <h2>✅ Backend Deployed Successfully!</h2>
-                    <table border="1" cellpadding="10">
-                        <tr><td><b>Service</b></td><td>Backend API</td></tr>
-                        <tr><td><b>Build</b></td><td>#${env.BUILD_NUMBER}</td></tr>
-                        <tr><td><b>Cluster</b></td><td>${env.CLUSTER_NAME}</td></tr>
-                        <tr><td><b>Strategy</b></td><td>Blue-Green (Zero Downtime)</td></tr>
-                    </table>
-                    <h3>Service URLs:</h3>
-                    <ul>
-                        <li><a href='https://api.webbyftw.co.in/api/health'>Health Check</a></li>
-                        <li><a href='https://api.webbyftw.co.in/api/docs'>API Documentation</a></li>
-                        <li><a href='https://api.webbyftw.co.in/api/employees'>Employees API</a></li>
-                    </ul>
-                    <p><i>Deployment completed with zero downtime using blue-green strategy.</i></p>
-                    <p><a href='${env.BUILD_URL}console'>View Console Output</a></p>
-                    """,
-                    to: 'vibhavhaneja2004@gmail.com',
-                    mimeType: 'text/html'
-                )
+URLs:
+- Health: https://api.webbyftw.co.in/api/health
+- Docs: https://api.webbyftw.co.in/api/docs
+
+SonarQube: http://sonarqube:9000/dashboard?id=${SERVICE_NAME}
+Trivy Reports: Check Jenkins Workspace
+"""
+                sh """
+                    aws sns publish \
+                        --topic-arn "arn:aws:sns:us-east-1:724772079986:jenkins-notifications" \
+                        --subject "✅ Backend Deployment Success - Build #${env.BUILD_NUMBER}" \
+                        --message "${message}" \
+                        --region ${AWS_REGION}
+                """
             }
         }
 
         failure {
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "❌ BACKEND DEPLOYMENT FAILED"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            script {
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "❌ BACKEND DEPLOYMENT FAILED"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-            emailext (
-                subject: "❌ Backend Deployment Failed - Build #${env.BUILD_NUMBER}",
-                body: """
-                <h2>❌ Backend Deployment Failed</h2>
-                <table border="1" cellpadding="10">
-                    <tr><td><b>Service</b></td><td>Backend API</td></tr>
-                    <tr><td><b>Build</b></td><td>#${env.BUILD_NUMBER}</td></tr>
-                    <tr><td><b>Status</b></td><td><span style="color:red">FAILED</span></td></tr>
-                </table>
-                <p>Please check the logs for details.</p>
-                <p><a href='${env.BUILD_URL}console'>View Console Output</a></p>
-                """,
-                to: 'vibhavhaneja2004@gmail.com',
-                mimeType: 'text/html'
-            )
+                def message = """
+❌ Backend Deployment Failed!
+Build: #${env.BUILD_NUMBER}
+Service: Backend API
+Cluster: ${env.CLUSTER_NAME}
+
+Check Jenkins logs for details.
+"""
+                sh """
+                    aws sns publish \
+                        --topic-arn "arn:aws:sns:us-east-1:724772079986:jenkins-notifications" \
+                        --subject "❌ Backend Deployment Failed - Build #${env.BUILD_NUMBER}" \
+                        --message "${message}" \
+                        --region ${AWS_REGION}
+                """
+            }
         }
 
         always {
