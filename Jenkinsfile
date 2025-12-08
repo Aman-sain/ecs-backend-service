@@ -131,13 +131,14 @@ pipeline {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                     echo "🛡️ Running Trivy Filesystem Scan (Docker)"
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    // Output to both file and stdout for parsing
                     sh '''
                         docker run --rm \
                             -v "${WORKSPACE}:/workspace" \
                             aquasec/trivy fs /workspace \
                             --format table \
                             --scanners vuln,config,secret \
-                            --exit-code 0
+                            --exit-code 0 | tee trivy-fs-report.txt
                     '''
                 }
             }
@@ -589,18 +590,30 @@ EOF
                 echo "✅ BACKEND DEPLOYMENT SUCCESSFUL"
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 
+                // Get Trivy Summary (first few lines of the table)
+                def trivySummary = "Trivy Scan: See Jenkins Workspace for full report"
+                try {
+                     trivySummary = sh(script: "grep -A 5 'Total:' trivy-fs-report.txt || echo 'No vulnerabilities found'", returnStdout: true).trim()
+                } catch (Exception e) {
+                     trivySummary = "Trivy Summary unavailable"
+                }
+
                 def message = """
 ✅ Backend Deployment Successful!
 Build: #${env.BUILD_NUMBER}
 Service: Backend API
 Cluster: ${env.CLUSTER_NAME}
 
-URLs:
-- Health: https://api.webbyftw.co.in/api/health
-- Docs: https://api.webbyftw.co.in/api/docs
+---------- LINKS ----------
+SonarReport: http://sonarqube:9000/dashboard?id=${SERVICE_NAME}
+API Health: https://api.webbyftw.co.in/api/health
+API Docs: https://api.webbyftw.co.in/api/docs
 
-SonarQube: http://sonarqube:9000/dashboard?id=${SERVICE_NAME}
-Trivy Reports: Check Jenkins Workspace
+---------- TRIVY SUMMARY ----------
+${trivySummary}
+
+---------------------------
+Check Jenkins Console for details.
 """
                 sh """
                     aws sns publish \
