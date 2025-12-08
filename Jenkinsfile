@@ -24,18 +24,8 @@ pipeline {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
-                    # Use docker to remove files (safer patterns) and handle permission issues
-                    set -e
-                    TARGET="${WORKSPACE}"
-                    if [ -z "$TARGET" ]; then
-                      echo "WORKSPACE not set! Exiting."
-                      exit 1
-                    fi
-
-                    docker run --rm -v "${TARGET}":/workspace alpine sh -c "
-                        # remove everything but avoid matching '.' and '..'
-                        rm -rf /workspace/* /workspace/.[!.]* /workspace/..?* || true
-                    "
+                    # Force clean workspace using Docker (handles root-owned files)
+                    docker run --rm -v ${WORKSPACE}:/workspace alpine sh -c "rm -rf /workspace/* /workspace/.* || true"
                     echo "✓ Workspace cleaned (via Docker)"
                 '''
             }
@@ -49,16 +39,13 @@ pipeline {
                     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 }
                 sh '''
-                    # Manual shallow clone (avoid workspace cleanup issues) then rsync into workspace
-                    set -e
-                    TMP_DIR="${WORKSPACE}/repo"
-                    git clone --depth 1 --branch main https://github.com/Aman-sain/ecs-backend-service.git "${TMP_DIR}"
+                    # Manual git clone to avoid Jenkins workspace cleanup issues
+                    git clone --depth 1 --branch main https://github.com/Aman-sain/ecs-backend-service.git ${WORKSPACE}/repo
 
-                    # Use rsync to reliably copy files (including dotfiles) and delete extras
-                    rsync -a --delete "${TMP_DIR}/" "${WORKSPACE}/"
-
-                    # cleanup temp clone
-                    rm -rf "${TMP_DIR}"
+                    # Move contents to workspace root
+                    mv ${WORKSPACE}/repo/* ${WORKSPACE}/ || true
+                    mv ${WORKSPACE}/repo/.* ${WORKSPACE}/ 2>/dev/null || true
+                    rm -rf ${WORKSPACE}/repo
 
                     echo "✓ Code checked out successfully"
                 '''
