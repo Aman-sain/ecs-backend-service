@@ -151,11 +151,6 @@ Resources:
         - FARGATE
       ExecutionRoleArn: !Ref TaskExecutionRoleArn
       TaskRoleArn: !Ref TaskRoleArn
-      Volumes:
-        - Name: db-volume
-          EFSVolumeConfiguration:
-            FilesystemId: !Ref FileSystem
-            TransitEncryption: ENABLED
       ContainerDefinitions:
         - Name: !Ref ServiceName
           Image: !Ref ImageUri
@@ -163,14 +158,11 @@ Resources:
           PortMappings:
             - ContainerPort: !Ref ContainerPort
               Protocol: tcp
-          MountPoints:
-            - SourceVolume: db-volume
-              ContainerPath: /app/db_data
           Environment:
             - Name: ENVIRONMENT
               Value: production
             - Name: DATABASE_URL
-              Value: sqlite:///./db_data/employees.db
+              Value: sqlite:///./employees.db
             - Name: PROJECT_NAME
               Value: Enterprise Employee Management System
           LogConfiguration:
@@ -182,7 +174,7 @@ Resources:
           HealthCheck:
             Command:
               - "CMD-SHELL"
-              - "exit 0"
+              - "python -c \"import urllib.request; urllib.request.urlopen('http://localhost/api/health').read()\" || exit 1"
             Interval: 30
             Timeout: 5
             Retries: 3
