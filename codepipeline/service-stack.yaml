@@ -74,7 +74,7 @@ Resources:
     Properties:
       PerformanceMode: generalPurpose
       Encrypted: true
-      Tags:
+      FileSystemTags:
         - Key: Name
           Value: !Sub '${ServiceName}-efs'
 
