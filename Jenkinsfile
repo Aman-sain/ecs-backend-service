@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         AWS_REGION = 'us-east-1'
-        AWS_ACCOUNT_ID = '724772079986'
+        AWS_ACCOUNT_ID = '312871631203'
         SERVICE_NAME = 'backend'
         CLUSTER_NAME = 'auto-deploy-prod-cluster'
     }
