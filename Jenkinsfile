@@ -6,6 +6,7 @@ pipeline {
         AWS_ACCOUNT_ID = '312871631203'
         SERVICE_NAME = 'backend'
         CLUSTER_NAME = 'auto-deploy-prod-cluster'
+        PATH = "/var/lib/jenkins/bin:$PATH"
     }
 
     options {
